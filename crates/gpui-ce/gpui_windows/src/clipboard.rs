@@ -36,6 +36,13 @@ static CLIPBOARD_PNG_FORMAT: LazyLock<u32> =
     LazyLock::new(|| register_clipboard_format(windows::core::w!("PNG")));
 static CLIPBOARD_JPG_FORMAT: LazyLock<u32> =
     LazyLock::new(|| register_clipboard_format(windows::core::w!("JFIF")));
+// Shell format telling Explorer whether a pasted file list is a copy or a move.
+static CLIPBOARD_PREFERRED_DROP_EFFECT_FORMAT: LazyLock<u32> =
+    LazyLock::new(|| register_clipboard_format(windows::core::w!("Preferred DropEffect")));
+
+/// Size of the Win32 `DROPFILES` header: pFiles (u32), pt.x, pt.y, fNC, fWide (i32 each).
+const DROPFILES_HEADER_SIZE: usize = 20;
+const DROPEFFECT_COPY: u32 = 1;
 
 static IMAGE_FORMATS_MAP: LazyLock<FxHashMap<u32, ImageFormat>> = LazyLock::new(|| {
     let mut map = FxHashMap::default();
@@ -78,7 +85,7 @@ pub(crate) fn write_to_clipboard(item: ClipboardItem) {
             match entry {
                 ClipboardEntry::String(string) => write_string(string)?,
                 ClipboardEntry::Image(image) => write_image(image)?,
-                ClipboardEntry::ExternalPaths(_) => {}
+                ClipboardEntry::ExternalPaths(paths) => write_files(paths)?,
             }
         }
         Ok(())
@@ -210,6 +217,42 @@ fn write_image(item: &Image) -> Result<()> {
             set_clipboard_bytes(&png_bytes, *CLIPBOARD_PNG_FORMAT)?;
         }
     }
+    Ok(())
+}
+
+/// Builds a `CF_HDROP` payload: a `DROPFILES` header followed by a
+/// double-NUL-terminated list of NUL-terminated UTF-16 paths.
+fn encode_hdrop(paths: &[std::path::PathBuf]) -> Vec<u8> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let mut bytes = Vec::with_capacity(DROPFILES_HEADER_SIZE + paths.len() * 64);
+    bytes.extend_from_slice(&(DROPFILES_HEADER_SIZE as u32).to_le_bytes()); // pFiles
+    bytes.extend_from_slice(&0i32.to_le_bytes()); // pt.x
+    bytes.extend_from_slice(&0i32.to_le_bytes()); // pt.y
+    bytes.extend_from_slice(&0i32.to_le_bytes()); // fNC
+    bytes.extend_from_slice(&1i32.to_le_bytes()); // fWide: paths are UTF-16
+    for path in paths {
+        for unit in path.as_os_str().encode_wide() {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+    }
+    bytes.extend_from_slice(&0u16.to_le_bytes());
+    bytes
+}
+
+fn write_files(paths: &ExternalPaths) -> Result<()> {
+    let paths = paths.paths();
+    if paths.is_empty() {
+        return Ok(());
+    }
+    set_clipboard_bytes(&encode_hdrop(paths), CF_HDROP.0 as u32)?;
+    // Without this, Explorer still defaults to copy; setting it explicitly
+    // keeps "Paste" from being interpreted as a move by other shell targets.
+    set_clipboard_bytes(
+        &DROPEFFECT_COPY.to_le_bytes(),
+        *CLIPBOARD_PREFERRED_DROP_EFFECT_FORMAT,
+    )?;
     Ok(())
 }
 
@@ -384,5 +427,34 @@ impl LockedGlobal {
 impl Drop for LockedGlobal {
     fn drop(&mut self) {
         unsafe { GlobalUnlock(self.global).ok() };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hdrop_payload_has_header_and_double_nul_terminated_wide_paths() {
+        let paths = vec![
+            std::path::PathBuf::from(r"C:\Temp\a.txt"),
+            std::path::PathBuf::from(r"C:\Temp\thư mục\b.log"),
+        ];
+        let bytes = encode_hdrop(&paths);
+
+        assert_eq!(u32::from_le_bytes(bytes[0..4].try_into().unwrap()), 20);
+        assert_eq!(i32::from_le_bytes(bytes[16..20].try_into().unwrap()), 1);
+
+        let wide: Vec<u16> = bytes[DROPFILES_HEADER_SIZE..]
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        assert_eq!(&wide[wide.len() - 2..], &[0, 0]);
+        let decoded: Vec<String> = wide[..wide.len() - 1]
+            .split(|unit| *unit == 0)
+            .filter(|part| !part.is_empty())
+            .map(String::from_utf16_lossy)
+            .collect();
+        assert_eq!(decoded, vec![r"C:\Temp\a.txt", r"C:\Temp\thư mục\b.log"]);
     }
 }

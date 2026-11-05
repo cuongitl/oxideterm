@@ -285,6 +285,10 @@ impl RemoteDesktopSessionEntity {
                         RemoteDesktopHelperEvent::ClipboardText { text }
                             if self.profile.session_options.clipboard.text =>
                         {
+                            // The remote now owns its clipboard, so the files
+                            // last announced there are gone. Forget the digest
+                            // so re-copying the same local files announces them.
+                            self.last_clipboard_files = None;
                             self.observe_desktop(
                                 oxideterm_audit::AuditCategory::File,
                                 "desktop_clipboard_transfer",
@@ -303,6 +307,8 @@ impl RemoteDesktopSessionEntity {
                         RemoteDesktopHelperEvent::ClipboardData { data }
                             if self.profile.session_options.clipboard.images =>
                         {
+                            // Same ownership change as remote text above.
+                            self.last_clipboard_files = None;
                             self.observe_desktop(
                                 oxideterm_audit::AuditCategory::File,
                                 "desktop_clipboard_transfer",
@@ -2783,7 +2789,7 @@ mod tests {
         window.run_until_parked();
         match rx.try_recv().unwrap() {
             RemoteDesktopHelperRequest::ClipboardFiles { paths, .. } => {
-                assert_eq!(paths, [local_path])
+                assert_eq!(paths, [local_path.clone()])
             }
             _ => panic!("activation must advertise files without injecting a paste shortcut"),
         }
@@ -2794,6 +2800,36 @@ mod tests {
             rx.try_recv().is_err(),
             "the same file selection must not be announced twice"
         );
+
+        // Copying on the remote replaces its clipboard. Re-copying the same
+        // local files afterwards must announce them again.
+        window.update(|window, cx| {
+            session.update(cx, |session, cx| {
+                session
+                    .delivery_tx
+                    .send(RemoteDesktopWorkerDelivery::Event {
+                        tab_id: session.tab_id,
+                        generation: session.worker_generation,
+                        event: RemoteDesktopHelperEvent::ClipboardText {
+                            text: "copied on the remote".into(),
+                        },
+                    })
+                    .unwrap();
+                session.poll_deliveries(window, cx);
+                cx.write_to_clipboard(ClipboardItem {
+                    entries: vec![ClipboardEntry::ExternalPaths(gpui::ExternalPaths(
+                        vec![local_path.clone()].into(),
+                    ))],
+                });
+                session.sync_local_file_clipboard(cx);
+            })
+        });
+        match rx.try_recv() {
+            Ok(RemoteDesktopHelperRequest::ClipboardFiles { paths, .. }) => {
+                assert_eq!(paths, [local_path.clone()])
+            }
+            _ => panic!("re-copied files must be announced after the remote clipboard changed"),
+        }
 
         let remote_path = PathBuf::from("/tmp/downloaded remote file.txt");
         window.update(|window, cx| {
