@@ -327,6 +327,25 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) -> Result<()> {
         match launch {
+            NativeConnectionLaunch::Local(launch) => {
+                launch
+                    .validate()
+                    .map_err(|message| anyhow::anyhow!(message))?;
+                let mut config = self.local_terminal_config();
+                config.cwd = Some(launch.cwd);
+                if let Some(program) = launch.program {
+                    config.command = Some(oxideterm_terminal::LocalCommand {
+                        program,
+                        args: launch.args,
+                    });
+                    if let Some(path) = launch.path {
+                        config.env.insert("PATH".into(), path.to_string());
+                    }
+                }
+                // Keep commands out of tab titles, saved shell identities and split metadata.
+                let title = self.local_terminal_tab_title();
+                self.create_local_terminal_tab_with_config(config, title, window, cx)
+            }
             NativeConnectionLaunch::SavedConnection(launch) => {
                 self.open_saved_connection(&launch.saved_connection_id, window, cx);
                 Ok(())
@@ -727,6 +746,7 @@ impl WorkspaceApp {
         &mut self,
         config: BleSessionConfig,
         adapter_guard: Option<oxideterm_ble::BleAdapterGuard>,
+        resolved_link: Option<oxideterm_terminal::BleResolvedLink>,
         terminal_options: ConnectionTerminalOptions,
         title: String,
         window: &mut Window,
@@ -754,6 +774,7 @@ impl WorkspaceApp {
             TerminalPane::new_ble_with_preferences(
                 config.clone(),
                 adapter_guard,
+                resolved_link,
                 preferences,
                 window,
                 cx,

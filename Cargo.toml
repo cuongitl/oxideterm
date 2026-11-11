@@ -104,7 +104,7 @@ gpui-pre-windows = { path = "crates/gpui-ce/gpui_windows" }
 gpui-pre-linux = { path = "crates/gpui-ce/gpui_linux" }
 gpui-pre-wgpu = { path = "crates/gpui-ce/gpui_wgpu" }
 # Keep the SSH protocol fork independent from application lint and test targets.
-russh = { git = "https://github.com/AnalyseDeCircuit/russh", rev = "e115f85e095b2f6fb5dc171988e720048fe1dd7c" }
+russh = { git = "https://github.com/AnalyseDeCircuit/russh", rev = "630bc79d7d759d11354855a7dd5b3e663d14c3ab" }
 russh-sftp = { path = "crates/russh-sftp" }
 vte = { path = "crates/vte" }
 
@@ -112,7 +112,7 @@ vte = { path = "crates/vte" }
 edition = "2024"
 license = "GPL-3.0-only"
 publish = false
-version = "2.3.0"
+version = "2.3.1"
 
 [workspace.dependencies]
 accesskit = { version = "0.24.0", features = ["enumn"] }
@@ -152,6 +152,7 @@ core-video = { version = "0.5.2", features = ["metal"] }
 criterion = { version = "0.5", features = ["html_reports"] }
 ctor = "1.0.6"
 dashmap = "6.1"
+dbus = "0.9"
 derive_more = { version = "2.1.1", features = ["add", "add_assign", "deref", "deref_mut", "display", "from_str", "mul", "mul_assign", "not"] }
 dirs = "5"
 dunce = "1.0"
